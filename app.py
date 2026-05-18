@@ -3,8 +3,8 @@ from PIL import Image
 import numpy as np
 import cv2
 
-st.set_page_config(page_title="مصحح أوراق التظليل المباشر", layout="centered")
-st.title("📸 مصحح أوراق التظليل عبر الكاميرا المباشرة")
+st.set_page_config(page_title="مصحح أوراق التظليل الذكي", layout="centered")
+st.title("📸 مصحح أوراق التظليل عبر الكاميرا")
 
 # --- 1. بناء واجهة إدخال مفتاح الإجابة النموذجية في شريط جانبي ---
 st.sidebar.header("🛠️ مفتاح الإجابة النموذجية")
@@ -14,7 +14,7 @@ st.sidebar.subheader("1. قسم صح / خطأ")
 tf_keys = []
 for i in range(1, 6):
     ans = st.sidebar.selectbox(f"س {i} (صح/خطأ)", ["صح", "خطأ"], key=f"tf_{i}")
-    tf_keys.append(0 if ans == "صح" else 1)
+    tf_keys.append(0 if ans == "صح" else 1) # 0=صح (الدائرة اليمنى)، 1=خطأ (الدائرة اليسرى)
 
 # قسم الاختيار من متعدد (10 أسئلة)
 st.sidebar.subheader("2. قسم الاختيار من متعدد")
@@ -47,8 +47,7 @@ def order_points(pts):
 
 
 # --- 3. تشغيل الكاميرا المباشرة وبدء المعالجة ---
-# هذه الأداة ستفتح الكاميرا فوراً داخل المتصفح
-camera_file = st.camera_input("وجه الكاميرا الخلفية نحو الورقة بشكل مستقيم وثابت ثم التقط الصورة")
+camera_file = st.camera_input("وجه الكاميرا الخلفية واجعل المربعات الأربعة واضحة داخل الإطار ثم التقط الصورة")
 
 if camera_file is not None:
     # قراءة الصورة الملتقطة وتحويلها إلى مصفوفة OpenCV
@@ -56,28 +55,42 @@ if camera_file is not None:
     img = np.array(image)
     original = img.copy()
     
-    # تحويل الصورة إلى رمادي وتنعيمها
+    # تحويل الصورة إلى رمادي وتطبيق فلتر التباين الحاد
     gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blur, 75, 200)
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 15, 3)
     
-    # البحث عن محيط الورقة الخارجية
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+    # البحث عن الأشكال الخارجية في الصورة
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    page = None
+    detected_squares = []
+    
     for c in contours:
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.contourArea(c) > 30000: # تقليل العتبة لتناسب أحجام الكاميرا المختلفة
-            page = approx
-            break
+        area = cv2.contourArea(c)
+        # فلترة المساحة لتناسب أبعاد الكاميرات القريبة والبعيدة
+        if 80 < area < 20000:
+            x, y, w, h = cv2.boundingRect(c)
+            ratio = w / float(h)
             
-    if page is not None:
-        st.success("تم التقاط وتحليل حدود الورقة بنجاح! ✅")
+            # ميزة Solidity و Extent للتأكد أن الشكل مربع مصمت 100% وليس دائرة مظللة
+            hull = cv2.convexHull(c)
+            hull_area = cv2.contourArea(hull)
+            solidity = area / float(hull_area) if hull_area > 0 else 0
+            extent = area / float(w * h)
+            
+            # المربع الحقيقي تكون نسبة أبعاده قريبة من 1 وممتلئ بالكامل
+            if 0.8 <= ratio <= 1.2 and solidity > 0.85 and extent > 0.82:
+                detected_squares.append((x + w//2, y + h//2))
+                # رسم مربع أخضر استرشادي حول ما تم رصده
+                cv2.rectangle(original, (x, y), (x + w, y + h), (0, 255, 0), 5)
+
+    # التحقق من رصد الزوايا الأربعة الحقيقية حصرياً
+    if len(detected_squares) == 4:
+        st.success("تم قفل زوايا الورقة الأربعة بنجاح! ✅")
         
-        # قص وتعديل زاوية الورقة هندسياً
-        doc_rect = order_points(page)
+        # ترتيب النقاط وقص الورقة هندسياً لتصبح مستقيمة بأبعاد ثابتة 500x700
+        pts_array = np.array(detected_squares, dtype="float32")
+        doc_rect = order_points(pts_array)
+        
         maxWidth, maxHeight = 500, 700  
         dst = np.array([
             [0, 0],
@@ -86,55 +99,58 @@ if camera_file is not None:
             [0, maxHeight - 1]
         ], dtype="float32")
         
-        M = cv2.getPerspectiveTransform(doc_rect, dst)
-        warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
+        激 = cv2.getPerspectiveTransform(doc_rect, dst)
+        warped = cv2.warpPerspective(img, 激, (maxWidth, maxHeight))
         
-        # تحويل الورقة المقصوصة لأبيض وأسود حاد تلقائي (Otsu)
+        # تحويل الورقة المقصوصة لأبيض وأسود حاد لقراءة التضليل الداخلي
         warped_gray = cv2.cvtColor(warped, cv2.COLOR_RGB2GRAY)
         warped_thresh = cv2.threshold(warped_gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
         
-        # حقول حفظ النتيجة
         student_score = 0
         details = []
 
-        # دالة فحص التضليل المحسنة
+        # دالة فحص التضليل بناءً على مصفوفة الإحداثيات العمودية الجديدة لورقتك
         def check_zone(total_options, start_x, start_y, step_x, step_y, q_idx):
             max_pixels = 0
             selected_idx = -1
             for opt in range(total_options):
-                x = int(start_x + (opt * step_x))
-                y = int(start_y + (q_idx * step_y))
+                x = int(startX + (opt * step_x))
+                y = int(startY + (q_idx * step_y))
                 
-                # منطقة الفحص الدائرية
-                roi = warped_thresh[y-9:y+9, x-9:x+9]
-                pixel_count = cv2.countNonZero(roi)
-                
-                if pixel_count > max_pixels and pixel_count > 80: 
-                    max_pixels = pixel_count
-                    selected_idx = opt
+                # فحص الحبر داخل الدائرة المحددة
+                if 10 <= x <= 490 and 10 <= y <= 690:
+                    roi = warped_thresh[y-9:y+9, x-9:x+9]
+                    pixel_count = cv2.countNonZero(roi)
+                    if pixel_count > max_pixels and pixel_count > 90: 
+                        max_pixels = pixel_count
+                        selected_idx = opt
             return selected_idx
 
-        # 1. فحص قسم صح/خطأ (5 أسئلة)
-        st.subheader("📊 النتيجة الفورية للورقة الملتقطة:")
+        st.subheader("📊 النتيجة التفصيلية للورقة:")
+        
+        # 1. قسم صح/خطأ (القسم العلوي - 5 أسئلة عمودية متتالية)
         tf_results = []
+        startX, startY, stepX, stepY = 265, 205, -30, 24
         for i in range(5):
-            ans = check_zone(2, 385, 235, -45, 33, i)
+            ans = check_zone(2, startX, startY, stepX, stepY, i)
             tf_results.append(ans)
             if ans == tf_keys[i]: student_score += 1
         details.append(f"**إجابات صح/خطأ:** {[ 'ص' if x==0 else ('خ' if x==1 else 'فارغ') for x in tf_results]}")
 
-        # 2. فحص قسم الاختيار من متعدد (10 أسئلة)
+        # 2. قسم الاختيار من متعدد (القسم الأوسط - 10 أسئلة عمودية متتالية)
         mc_results = []
+        startX, startY, stepX, stepY = 288, 395, -25, 21
         for i in range(10):
-            ans = check_zone(4, 222, 235, -32, 33, i)
+            ans = check_zone(4, startX, startY, stepX, stepY, i)
             mc_results.append(ans)
             if ans == mc_keys[i]: student_score += 1
         details.append(f"**إجابات الاختياري:** {[options_labels[x] if x!=-1 else 'فارغ' for x in mc_results]}")
 
-        # 3. فحص قسم المزاوجة (5 أسئلة)
+        # 3. قسم المزاوجة (القسم السفلي - 5 أسئلة عمودية متتالية)
         match_results = []
+        startX, startY, stepX, stepY = 300, 605, -25, 21
         for i in range(5):
-            ans = check_zone(5, 82, 235, -28, 33, i)
+            ans = check_zone(5, startX, startY, stepX, stepY, i)
             match_results.append(ans)
             if ans == match_keys[i]: student_score += 1
         details.append(f"**إجابات المزاوجة:** {[options_labels[x] if x!=-1 else 'فارغ' for x in match_results]}")
@@ -145,13 +161,19 @@ if camera_file is not None:
         for det in details:
             st.write(det)
             
-        # عرض نتائج المعالجة الهندسية
+        # عرض نتائج المعالجة الهندسية للتحقق
         st.subheader("📷 مخرجات المعالجة الرقمية:")
         col1, col2 = st.columns(2)
         with col1:
-            st.image(warped, caption="الورقة مقصوصة ومستقيمة")
+            st.image(warped, caption="الورقة مقصوصة ومستقيمة بناءً على المربعات")
         with col2:
-            st.image(warped_thresh, caption="تحليل الحبر والتضليل")
+            st.image(warped_thresh, caption="تحليل نقاط التضليل الداخلي")
 
     else:
-        st.warning("⚠️ يرجى الضغط على زر التقاط الصورة (Take Photo) بعد توجيه الكاميرا بشكل جيد ليتم بدء التصحيح.")
+        # رسالة الخطأ التشخيصية الواضحة والذكية في حال لم تكن النقاط 4 بالضبط
+        st.error(f"❌ لم يتم رصد المربعات الأربعة الحقيقية بشكل صحيح (تم العثور على {len(detected_squares)} معالم).")
+        st.info("💡 نصيحة تضمن الحل: يرجى تقريب أو تباعد الكاميرا قليلاً بحيث تظهر كامل الورقة والمربعات السوداء الأربعة بوضوح تام داخل الشاشة دون انقطاع.")
+        st.image(original, caption="المعالم التي حاول البرنامج رصدها كمربعات")
+
+else:
+    st.info("💡 في انتظار التقاط الصورة لبدء عملية التصحيح التلقائي...")
