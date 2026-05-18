@@ -3,8 +3,8 @@ from PIL import Image
 import numpy as np
 import cv2
 
-st.set_page_config(page_title="مصحح أوراق التظليل الذكي", layout="centered")
-st.title("🎯 مصحح أوراق التظليل الذكي (Python + Streamlit)")
+st.set_page_config(page_title="مصحح أوراق التظليل المباشر", layout="centered")
+st.title("📸 مصحح أوراق التظليل عبر الكاميرا المباشرة")
 
 # --- 1. بناء واجهة إدخال مفتاح الإجابة النموذجية في شريط جانبي ---
 st.sidebar.header("🛠️ مفتاح الإجابة النموذجية")
@@ -46,11 +46,13 @@ def order_points(pts):
     return rect
 
 
-# --- 3. رفع الملف وبدء المعالجة الصورية ---
-uploaded_file = st.file_uploader("قم برفع صورة ورقة الطالب هنا", type=["jpg", "jpeg", "png"])
+# --- 3. تشغيل الكاميرا المباشرة وبدء المعالجة ---
+# هذه الأداة ستفتح الكاميرا فوراً داخل المتصفح
+camera_file = st.camera_input("وجه الكاميرا الخلفية نحو الورقة بشكل مستقيم وثابت ثم التقط الصورة")
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
+if camera_file is not None:
+    # قراءة الصورة الملتقطة وتحويلها إلى مصفوفة OpenCV
+    image = Image.open(camera_file)
     img = np.array(image)
     original = img.copy()
     
@@ -67,16 +69,16 @@ if uploaded_file is not None:
     for c in contours:
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4 and cv2.contourArea(c) > 50000:
+        if len(approx) == 4 and cv2.contourArea(c) > 30000: # تقليل العتبة لتناسب أحجام الكاميرا المختلفة
             page = approx
             break
             
     if page is not None:
-        st.success("تم رصد حدود الورقة الخارجية بنجاح! ✅")
+        st.success("تم التقاط وتحليل حدود الورقة بنجاح! ✅")
         
-        # --- خطوة السحر: قص وتعديل زاوية الورقة (Warp Perspective) ---
+        # قص وتعديل زاوية الورقة هندسياً
         doc_rect = order_points(page)
-        maxWidth, maxHeight = 500, 700  # توحيد أبعاد الورقة المقصوصة لتثبيت الإحداثيات
+        maxWidth, maxHeight = 500, 700  
         dst = np.array([
             [0, 0],
             [maxWidth - 1, 0],
@@ -87,38 +89,39 @@ if uploaded_file is not None:
         M = cv2.getPerspectiveTransform(doc_rect, dst)
         warped = cv2.warpPerspective(img, M, (maxWidth, maxHeight))
         
-        # معالجة الورقة المقصوصة وتحويلها لأبيض وأسود حاد تلقائي (Otsu)
+        # تحويل الورقة المقصوصة لأبيض وأسود حاد تلقائي (Otsu)
         warped_gray = cv2.cvtColor(warped, cv2.COLOR_RGB2GRAY)
         warped_thresh = cv2.threshold(warped_gray, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
         
-        # --- خوارزمية فحص التضليل وقراءة الإجابات داخل الورقة الثابتة ---
+        # حقول حفظ النتيجة
         student_score = 0
         details = []
 
-        # دالة لفحص الدائرة المظللة في منطقة محددة برمجياً
+        # دالة فحص التضليل المحسنة
         def check_zone(total_options, start_x, start_y, step_x, step_y, q_idx):
             max_pixels = 0
             selected_idx = -1
             for opt in range(total_options):
                 x = int(start_x + (opt * step_x))
                 y = int(start_y + (q_idx * step_y))
-                # تحديد مربع فحص صغير حول كل دائرة إجابة
+                
+                # منطقة الفحص الدائرية
                 roi = warped_thresh[y-9:y+9, x-9:x+9]
                 pixel_count = cv2.countNonZero(roi)
                 
-                if pixel_count > max_pixels and pixel_count > 90: # عتبة امتلاء الدائرة بالحبر
-                    max_pixels = pixelCount
+                if pixel_count > max_pixels and pixel_count > 80: 
+                    max_pixels = pixel_count
                     selected_idx = opt
             return selected_idx
 
         # 1. فحص قسم صح/خطأ (5 أسئلة)
-        st.subheader("📊 نتائج التصحيح الفورية:")
+        st.subheader("📊 النتيجة الفورية للورقة الملتقطة:")
         tf_results = []
         for i in range(5):
             ans = check_zone(2, 385, 235, -45, 33, i)
             tf_results.append(ans)
             if ans == tf_keys[i]: student_score += 1
-        details.append(f"**إجابات صح/خطأ المكتشفة:** {[ 'ص' if x==0 else ('خ' if x==1 else 'فارغ') for x in tf_results]}")
+        details.append(f"**إجابات صح/خطأ:** {[ 'ص' if x==0 else ('خ' if x==1 else 'فارغ') for x in tf_results]}")
 
         # 2. فحص قسم الاختيار من متعدد (10 أسئلة)
         mc_results = []
@@ -126,7 +129,7 @@ if uploaded_file is not None:
             ans = check_zone(4, 222, 235, -32, 33, i)
             mc_results.append(ans)
             if ans == mc_keys[i]: student_score += 1
-        details.append(f"**إجابات الاختياري المكتشفة:** {[options_labels[x] if x!=-1 else 'فارغ' for x in mc_results]}")
+        details.append(f"**إجابات الاختياري:** {[options_labels[x] if x!=-1 else 'فارغ' for x in mc_results]}")
 
         # 3. فحص قسم المزاوجة (5 أسئلة)
         match_results = []
@@ -134,21 +137,21 @@ if uploaded_file is not None:
             ans = check_zone(5, 82, 235, -28, 33, i)
             match_results.append(ans)
             if ans == match_keys[i]: student_score += 1
-        details.append(f"**إجابات المزاوجة المكتشفة:** {[options_labels[x] if x!=-1 else 'فارغ' for x in match_results]}")
+        details.append(f"**إجابات المزاوجة:** {[options_labels[x] if x!=-1 else 'فارغ' for x in match_results]}")
 
-        # عرض النتائج النهائية على الشاشة
+        # إظهار النتيجة الكلية بارزة
         st.metric(label="الدرجة الإجمالية للطالب", value=f"{student_score} / 20")
         
         for det in details:
             st.write(det)
             
-        # عرض صور المراحل للتأكد من دقة عمل الكود هندسياً
-        st.subheader("📷 الأوراق التي تمت معالجتها خلف الكواليس:")
+        # عرض نتائج المعالجة الهندسية
+        st.subheader("📷 مخرجات المعالجة الرقمية:")
         col1, col2 = st.columns(2)
         with col1:
-            st.image(warped, caption="1. الورقة بعد القص والتدوير الهندسي المستوي")
+            st.image(warped, caption="الورقة مقصوصة ومستقيمة")
         with col2:
-            st.image(warped_thresh, caption="2. تحليل الحبر والتضليل (الثنائي المصمت)")
+            st.image(warped_thresh, caption="تحليل الحبر والتضليل")
 
     else:
-        st.error("❌ لم يتم اكتشاف حدود الورقة بشكل صحيح. تأكد من أن الصورة واضحة، والورقة تظهر بالكامل، ويفضل وجود خلفية داكنة أثناء التصوير.")
+        st.warning("⚠️ يرجى الضغط على زر التقاط الصورة (Take Photo) بعد توجيه الكاميرا بشكل جيد ليتم بدء التصحيح.")
