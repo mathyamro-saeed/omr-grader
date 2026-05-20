@@ -34,38 +34,35 @@ for i in range(1, 6):
 debug_mode = st.sidebar.checkbox("🔬 وضع التشخيص", value=False)
 
 # =====================================================================
-# الإحداثيات النسبية — تُعدَّل حسب ورقتك الفعلية
+# الإحداثيات النسبية — مُعايَرة من الورقة الفعلية بدقة
 # =====================================================================
-# كيفية ضبطها: فعّل "وضع التشخيص" وانظر أين تقع الدوائر الخضراء
-# ثم عدّل start_x/y حتى تتمركز الدوائر على خانات التظليل.
-# الاتجاه: x من اليمين لليسار (سالب step_x لأن الورقة عربية RTL)
+# الترتيب: الخيار 0 = أقصى اليمين (صح أو أ)، الأعداد سالبة = اتجاه RTL
 LAYOUT = {
-    # قسم صح/خطأ: عمودان، 5 أسئلة
-    # الخيار 0 = صح  (يمين)،  الخيار 1 = خطأ  (يسار)
+    # قسم صح/خطأ: الخيار 0=صح (يمين)، الخيار 1=خطأ (يسار)
     "tf": {
-        "start_x_ratio": 0.525,  # أول دائرة (خيار صح) — نسبة من العرض
-        "step_x_ratio":  -0.065, # المسافة بين الخيارين (سالب = نحو اليسار)
-        "start_y_ratio": 0.290,  # أول سؤال — نسبة من الارتفاع
-        "step_y_ratio":  0.036,  # المسافة بين الأسئلة عمودياً
-        "n_options": 2,
+        "start_x_ratio": 0.4907,   # ← مُعايَر من الورقة الفعلية
+        "step_x_ratio":  -0.0372,
+        "start_y_ratio": 0.1669,
+        "step_y_ratio":  0.0213,
+        "n_options":   2,
         "n_questions": 5,
     },
-    # قسم اختياري: 4 خيارات، 10 أسئلة
+    # قسم اختياري: الخيار 0=أ (أقصى يمين) → د (أقصى يسار)
     "mc": {
-        "start_x_ratio": 0.565,
-        "step_x_ratio":  -0.058,
-        "start_y_ratio": 0.562,
-        "step_y_ratio":  0.031,
-        "n_options": 4,
+        "start_x_ratio": 0.5192,   # ← مُعايَر من الورقة الفعلية
+        "step_x_ratio":  -0.0336,
+        "start_y_ratio": 0.2955,
+        "step_y_ratio":  0.0205,
+        "n_options":   4,
         "n_questions": 10,
     },
-    # قسم مزاوجة: 5 خيارات، 5 أسئلة
+    # قسم مزاوجة: الخيار 0=أ (أقصى يمين) → هـ (أقصى يسار)
     "match": {
-        "start_x_ratio": 0.590,
-        "step_x_ratio":  -0.055,
-        "start_y_ratio": 0.862,
-        "step_y_ratio":  0.031,
-        "n_options": 5,
+        "start_x_ratio": 0.5301,   # ← مُعايَر من الورقة الفعلية
+        "step_x_ratio":  -0.0329,
+        "start_y_ratio": 0.5197,
+        "step_y_ratio":  0.0194,
+        "n_options":   5,
         "n_questions": 5,
     },
 }
@@ -91,16 +88,16 @@ def four_point_transform(image, pts):
     tl, tr, br, bl = rect
     W = int(max(np.linalg.norm(br - bl), np.linalg.norm(tr - tl)))
     H = int(max(np.linalg.norm(tr - br), np.linalg.norm(tl - bl)))
+    # تأكد من نسبة عرض/ارتفاع منطقية (الورقة أطول من عرضها)
+    if W > H:
+        W, H = H, W
     dst = np.array([[0,0],[W-1,0],[W-1,H-1],[0,H-1]], dtype="float32")
     M   = cv2.getPerspectiveTransform(rect, dst)
     return cv2.warpPerspective(image, M, (W, H)), W, H
 
 
 def find_paper_contour(img_bgr):
-    """
-    يكشف حدود الورقة (أكبر مستطيل رباعي في الصورة).
-    لا يحتاج مربعات الزوايا — يعمل على حافة الورقة مباشرة.
-    """
+    """يكشف أكبر مستطيل رباعي في الصورة = الورقة"""
     h, w = img_bgr.shape[:2]
     gray  = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blur  = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -116,11 +113,11 @@ def find_paper_contour(img_bgr):
         area   = cv2.contourArea(c)
         if len(approx) == 4 and area > 0.15 * w * h:
             return approx
-
     return None
 
 
-def check_bubble(thresh, cx, cy, radius=11):
+def check_bubble(thresh, cx, cy, radius=12):
+    """يحسب عدد البكسلات المُظللة في منطقة دائرية"""
     h, w = thresh.shape
     x1, y1 = max(0, cx - radius), max(0, cy - radius)
     x2, y2 = min(w, cx + radius), min(h, cy + radius)
@@ -128,6 +125,7 @@ def check_bubble(thresh, cx, cy, radius=11):
 
 
 def scan_section(thresh, cfg, W, H, debug_img=None):
+    """يمسح قسماً كاملاً ويُرجع قائمة الإجابات المختارة"""
     results = []
     for q in range(cfg["n_questions"]):
         cy     = int(cfg["start_y_ratio"] * H + q * cfg["step_y_ratio"] * H)
@@ -136,24 +134,17 @@ def scan_section(thresh, cfg, W, H, debug_img=None):
             cx = int(cfg["start_x_ratio"] * W + opt * cfg["step_x_ratio"] * W)
             counts.append(check_bubble(thresh, cx, cy))
             if debug_img is not None:
-                cv2.circle(debug_img, (cx, cy), 11, (0, 220, 0), 2)
-                cv2.putText(debug_img, str(opt), (cx-4, cy+4),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0,220,0), 1)
+                cv2.circle(debug_img, (cx, cy), 13, (0, 220, 0), 2)
+                cv2.putText(debug_img, str(opt), (cx - 5, cy + 5),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 200, 0), 1)
         best = int(np.argmax(counts))
-        results.append(best if counts[best] > 70 else -1)
+        results.append(best if counts[best] > 60 else -1)
     return results
 
 
 # =====================================================================
 # واجهة المستخدم الرئيسية
 # =====================================================================
-
-st.markdown("""
-<style>
-[data-testid="stMetricValue"] { font-size: 2.2rem; }
-</style>
-""", unsafe_allow_html=True)
-
 camera_file = st.camera_input("📷 صوِّر ورقة الإجابات — تأكد أن الورقة كاملة داخل الإطار")
 
 if camera_file is not None:
@@ -163,24 +154,25 @@ if camera_file is not None:
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         H_orig, W_orig = img_bgr.shape[:2]
 
-        # ── الخطوة 1: كشف حدود الورقة ──────────────────────────────
+        # ── الخطوة 1: كشف حدود الورقة ────────────────────────────────
         paper = find_paper_contour(img_bgr)
 
         if paper is None:
-            # fallback: افترض أن الورقة تملأ الصورة كاملاً
-            st.warning("⚠️ لم أتمكن من تحديد حدود الورقة بدقة — سأعالج الصورة كاملة.")
+            st.warning("⚠️ لم أتمكن من تحديد حدود الورقة — سأعالج الصورة كاملة.")
             warped, W, H = img_bgr.copy(), W_orig, H_orig
         else:
             st.success("✅ تم تحديد حدود الورقة بنجاح!")
             preview = img_bgr.copy()
             cv2.drawContours(preview, [paper], -1, (0, 230, 0), 4)
             st.image(cv2.cvtColor(preview, cv2.COLOR_BGR2RGB), caption="الورقة المرصودة")
-            warped, W, H = four_point_transform(img_bgr, paper.reshape(4,2).astype("float32"))
+            warped, W, H = four_point_transform(
+                img_bgr, paper.reshape(4, 2).astype("float32")
+            )
 
-        # ── الخطوة 2: ثنائية الصورة بـ CLAHE ────────────────────────
-        warped_gray   = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
-        clahe         = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
-        warped_eq     = clahe.apply(warped_gray)
+        # ── الخطوة 2: تحسين التباين ثم ثنائية الصورة ─────────────────
+        warped_gray  = cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY)
+        clahe        = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        warped_eq    = clahe.apply(warped_gray)
         warped_thresh = cv2.threshold(
             warped_eq, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU
         )[1]
@@ -204,7 +196,7 @@ if camera_file is not None:
             st.metric("📊 الدرجة الإجمالية", f"{score} / 20")
         with col_pct:
             pct   = round(score / 20 * 100)
-            grade = ("ممتاز 🌟" if pct >= 90 else
+            grade = ("ممتاز 🌟"    if pct >= 90 else
                      "جيد جداً ✅" if pct >= 75 else
                      "جيد 👍"      if pct >= 60 else
                      "مقبول ⚠️"   if pct >= 50 else
@@ -246,37 +238,30 @@ if camera_file is not None:
 
         if debug_mode and debug_img is not None:
             st.image(cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB),
-                     caption="🔬 مناطق الفحص (دوائر خضراء = مواضع القراءة)")
+                     caption="🔬 مناطق الفحص — الدوائر الخضراء = مواضع القراءة")
             st.info(
-                "📐 **كيفية ضبط الإحداثيات إذا كانت الدوائر بعيدة عن الخانات:**\n\n"
-                "افتح `app.py` وابحث عن قاموس `LAYOUT`، ثم:\n"
-                "- زِد/نقِّص `start_x_ratio` لتحريك أول خانة يميناً/يساراً\n"
-                "- زِد/نقِّص `start_y_ratio` لتحريك أول سؤال لأعلى/أسفل\n"
-                "- عدِّل `step_y_ratio` إذا كانت الأسئلة متقاربة/متباعدة"
+                "📐 **إذا كانت الدوائر بعيدة عن الخانات:**\n\n"
+                "ابحث عن `LAYOUT` في الكود وعدِّل:\n"
+                "- `start_x_ratio` / `start_y_ratio`: موضع أول خانة\n"
+                "- `step_x_ratio` / `step_y_ratio`: المسافة بين الخانات"
             )
 
     except Exception as e:
         st.error(f"⚠️ خطأ في المعالجة: {e}")
-        st.info("حاول التصوير في إضاءة أفضل مع تثبيت الجوال وجعل الورقة مستوية.")
+        st.info("حاول التصوير في إضاءة جيدة مع تثبيت الجوال وجعل الورقة مستوية.")
 
 else:
     st.info("📷 وجِّه الكاميرا على ورقة الإجابات والتقط صورة لبدء التصحيح.")
-
     with st.expander("ℹ️ تعليمات الاستخدام"):
         st.markdown("""
 **الخطوات:**
 1. أدخل مفتاح الإجابة من الشريط الجانبي
-2. ضع الورقة على سطح مستوٍ ذي **خلفية داكنة أو مختلفة اللون**
-3. صوِّرها بحيث تظهر **حواف الورقة الأربعة** كاملة داخل الإطار
+2. ضع الورقة على سطح مستوٍ ذي **خلفية داكنة**
+3. صوِّرها بحيث تظهر **حواف الورقة الأربعة** كاملة
 4. انتظر ظهور النتيجة
 
-**نصائح مهمة:**
-- 💡 إضاءة جيدة ومتساوية (تجنب الظل والانعكاس)
+**نصائح:**
+- 💡 إضاءة جيدة وموحدة (تجنب الظل والوهج)
 - 📄 الورقة مستوية غير مطوية
-- 🔲 الورقة بيضاء على خلفية داكنة = تباين أفضل
-- 📐 الورقة كاملة داخل الإطار
-
-**وضع التشخيص:**
-فعّله من الشريط الجانبي إذا كانت النتائج غير دقيقة.
-سيظهر دوائر خضراء على مواضع القراءة لمساعدتك في الضبط.
+- 📐 الورقة بيضاء على خلفية داكنة = أفضل نتيجة
         """)
